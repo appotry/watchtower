@@ -3,12 +3,14 @@ package notifications
 import (
 	"bytes"
 	stdlog "log"
+	"os"
 	"strings"
 	"text/template"
 	"time"
 
 	"github.com/containrrr/shoutrrr"
 	"github.com/containrrr/shoutrrr/pkg/types"
+	"github.com/containrrr/watchtower/pkg/notifications/templates"
 	t "github.com/containrrr/watchtower/pkg/types"
 	log "github.com/sirupsen/logrus"
 )
@@ -17,29 +19,6 @@ import (
 var LocalLog = log.WithField("notify", "no")
 
 const (
-	shoutrrrDefaultLegacyTemplate = "{{range .}}{{.Message}}{{println}}{{end}}"
-	shoutrrrDefaultTemplate       = `
-{{- if .Report -}}
-  {{- with .Report -}}
-    {{- if ( or .Updated .Failed ) -}}
-{{len .Scanned}} Scanned, {{len .Updated}} Updated, {{len .Failed}} Failed
-      {{- range .Updated}}
-- {{.Name}} ({{.ImageName}}): {{.CurrentImageID.ShortID}} updated to {{.LatestImageID.ShortID}}
-      {{- end -}}
-      {{- range .Fresh}}
-- {{.Name}} ({{.ImageName}}): {{.State}}
-	  {{- end -}}
-	  {{- range .Skipped}}
-- {{.Name}} ({{.ImageName}}): {{.State}}: {{.Error}}
-	  {{- end -}}
-	  {{- range .Failed}}
-- {{.Name}} ({{.ImageName}}): {{.State}}: {{.Error}}
-	  {{- end -}}
-    {{- end -}}
-  {{- end -}}
-{{- else -}}
-  {{range .Entries -}}{{.Message}}{{"\n"}}{{- end -}}
-{{- end -}}`
 	shoutrrrType = "shoutrrr"
 )
 
@@ -52,13 +31,15 @@ type shoutrrrTypeNotifier struct {
 	Urls           []string
 	Router         router
 	entries        []*log.Entry
-	logLevels      []log.Level
+	logLevel       log.Level
 	template       *template.Template
 	messages       chan string
 	done           chan bool
 	legacyTemplate bool
 	params         *types.Params
-	hostname       string
+	data           StaticData
+	receiving      bool
+	delay          time.Duration
 }
 
 // GetScheme returns the scheme part of a Shoutrrr URL
@@ -79,29 +60,43 @@ func (n *shoutrrrTypeNotifier) GetNames() []string {
 	return names
 }
 
-func newShoutrrrNotifier(tplString string, acceptedLogLevels []log.Level, legacy bool, hostname string, delay time.Duration, urls ...string) t.Notifier {
-
-	notifier := createNotifier(urls, acceptedLogLevels, tplString, legacy)
-	notifier.hostname = hostname
-	notifier.params = &types.Params{"title": GetTitle(hostname)}
-	log.AddHook(notifier)
-
-	// Do the sending in a separate goroutine so we don't block the main process.
-	go sendNotifications(notifier, delay)
-
-	return notifier
+// GetURLs returns a list of URLs for notification services that has been added
+func (n *shoutrrrTypeNotifier) GetURLs() []string {
+	return n.Urls
 }
 
-func createNotifier(urls []string, levels []log.Level, tplString string, legacy bool) *shoutrrrTypeNotifier {
+// AddLogHook adds the notifier as a receiver of log messages and starts a go func for processing them
+func (n *shoutrrrTypeNotifier) AddLogHook() {
+	if n.receiving {
+		return
+	}
+	n.receiving = true
+	log.AddHook(n)
+
+	// Do the sending in a separate goroutine, so we don't block the main process.
+	go sendNotifications(n)
+}
+
+func createNotifier(urls []string, level log.Level, tplString string, legacy bool, data StaticData, stdout bool, delay time.Duration) *shoutrrrTypeNotifier {
 	tpl, err := getShoutrrrTemplate(tplString, legacy)
 	if err != nil {
 		log.Errorf("Could not use configured notification template: %s. Using default template", err)
 	}
 
-	traceWriter := log.StandardLogger().WriterLevel(log.TraceLevel)
-	r, err := shoutrrr.NewSender(stdlog.New(traceWriter, "Shoutrrr: ", 0), urls...)
+	var logger types.StdLogger
+	if stdout {
+		logger = stdlog.New(os.Stdout, ``, 0)
+	} else {
+		logger = stdlog.New(log.StandardLogger().WriterLevel(log.TraceLevel), "Shoutrrr: ", 0)
+	}
+	r, err := shoutrrr.NewSender(logger, urls...)
 	if err != nil {
 		log.Fatalf("Failed to initialize Shoutrrr notifications: %s\n", err.Error())
+	}
+
+	params := &types.Params{}
+	if data.Title != "" {
+		params.SetTitle(data.Title)
 	}
 
 	return &shoutrrrTypeNotifier{
@@ -109,15 +104,18 @@ func createNotifier(urls []string, levels []log.Level, tplString string, legacy 
 		Router:         r,
 		messages:       make(chan string, 1),
 		done:           make(chan bool),
-		logLevels:      levels,
+		logLevel:       level,
 		template:       tpl,
 		legacyTemplate: legacy,
+		data:           data,
+		params:         params,
+		delay:          delay,
 	}
 }
 
-func sendNotifications(n *shoutrrrTypeNotifier, delay time.Duration) {
+func sendNotifications(n *shoutrrrTypeNotifier) {
 	for msg := range n.messages {
-		time.Sleep(delay)
+		time.Sleep(n.delay)
 		errs := n.Router.Send(msg, n.params)
 
 		for i, err := range errs {
@@ -149,9 +147,7 @@ func (n *shoutrrrTypeNotifier) buildMessage(data Data) (string, error) {
 }
 
 func (n *shoutrrrTypeNotifier) sendEntries(entries []*log.Entry, report t.Report) {
-	title, _ := n.params.Title()
-	host := n.hostname
-	msg, err := n.buildMessage(Data{entries, report, title, host})
+	msg, err := n.buildMessage(Data{n.data, entries, report})
 
 	if msg == "" {
 		// Log in go func in case we entered from Fire to avoid stalling
@@ -187,12 +183,12 @@ func (n *shoutrrrTypeNotifier) Close() {
 	// Use fmt so it doesn't trigger another notification.
 	LocalLog.Info("Waiting for the notification goroutine to finish")
 
-	_ = <-n.done
+	<-n.done
 }
 
 // Levels return what log levels trigger notifications
 func (n *shoutrrrTypeNotifier) Levels() []log.Level {
-	return n.logLevels
+	return log.AllLevels[:n.logLevel+1]
 }
 
 // Fire is the hook that logrus calls on a new log message
@@ -211,12 +207,13 @@ func (n *shoutrrrTypeNotifier) Fire(entry *log.Entry) error {
 }
 
 func getShoutrrrTemplate(tplString string, legacy bool) (tpl *template.Template, err error) {
-	funcs := template.FuncMap{
-		"ToUpper": strings.ToUpper,
-		"ToLower": strings.ToLower,
-		"Title":   strings.Title,
+
+	tplBase := template.New("").Funcs(templates.Funcs)
+
+	if builtin, found := commonTemplates[tplString]; found {
+		log.WithField(`template`, tplString).Debug(`Using common template`)
+		tplString = builtin
 	}
-	tplBase := template.New("").Funcs(funcs)
 
 	// If we succeed in getting a non-empty template configuration
 	// try to parse the template string.
@@ -225,25 +222,17 @@ func getShoutrrrTemplate(tplString string, legacy bool) (tpl *template.Template,
 	}
 
 	// If we had an error (either from parsing the template string
-	// or from getting the template configuration) or we a
+	// or from getting the template configuration) or a
 	// template wasn't configured (the empty template string)
 	// fallback to using the default template.
 	if err != nil || tplString == "" {
-		defaultTemplate := shoutrrrDefaultTemplate
+		defaultKey := `default`
 		if legacy {
-			defaultTemplate = shoutrrrDefaultLegacyTemplate
+			defaultKey = `default-legacy`
 		}
 
-		tpl = template.Must(tplBase.Parse(defaultTemplate))
+		tpl = template.Must(tplBase.Parse(commonTemplates[defaultKey]))
 	}
 
 	return
-}
-
-// Data is the notification template data model
-type Data struct {
-	Entries []*log.Entry
-	Report  t.Report
-	Title   string
-	Host    string
 }

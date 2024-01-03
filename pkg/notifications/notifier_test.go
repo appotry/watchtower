@@ -3,7 +3,7 @@ package notifications_test
 import (
 	"fmt"
 	"net/url"
-	"os"
+	"time"
 
 	"github.com/containrrr/watchtower/cmd"
 	"github.com/containrrr/watchtower/internal/flags"
@@ -38,15 +38,101 @@ var _ = Describe("notifications", func() {
 					"test.host",
 				})
 				Expect(err).NotTo(HaveOccurred())
-				hostname := notifications.GetHostname(command)
-				title := notifications.GetTitle(hostname)
+				data := notifications.GetTemplateData(command)
+				title := data.Title
 				Expect(title).To(Equal("Watchtower updates on test.host"))
 			})
 		})
 		When("no hostname can be resolved", func() {
 			It("should use the default simple title", func() {
-				title := notifications.GetTitle("")
+				title := notifications.GetTitle("", "")
 				Expect(title).To(Equal("Watchtower updates"))
+			})
+		})
+		When("title tag is set", func() {
+			It("should use the prefix in the title", func() {
+				command := cmd.NewRootCommand()
+				flags.RegisterNotificationFlags(command)
+
+				Expect(command.ParseFlags([]string{
+					"--notification-title-tag",
+					"PREFIX",
+				})).To(Succeed())
+
+				data := notifications.GetTemplateData(command)
+				Expect(data.Title).To(HavePrefix("[PREFIX]"))
+			})
+		})
+		When("legacy email tag is set", func() {
+			It("should use the prefix in the title", func() {
+				command := cmd.NewRootCommand()
+				flags.RegisterNotificationFlags(command)
+
+				Expect(command.ParseFlags([]string{
+					"--notification-email-subjecttag",
+					"PREFIX",
+				})).To(Succeed())
+
+				data := notifications.GetTemplateData(command)
+				Expect(data.Title).To(HavePrefix("[PREFIX]"))
+			})
+		})
+		When("the skip title flag is set", func() {
+			It("should return an empty title", func() {
+				command := cmd.NewRootCommand()
+				flags.RegisterNotificationFlags(command)
+
+				Expect(command.ParseFlags([]string{
+					"--notification-skip-title",
+				})).To(Succeed())
+
+				data := notifications.GetTemplateData(command)
+				Expect(data.Title).To(BeEmpty())
+			})
+		})
+		When("no delay is defined", func() {
+			It("should use the default delay", func() {
+				command := cmd.NewRootCommand()
+				flags.RegisterNotificationFlags(command)
+
+				delay := notifications.GetDelay(command, time.Duration(0))
+				Expect(delay).To(Equal(time.Duration(0)))
+			})
+		})
+		When("delay is defined", func() {
+			It("should use the specified delay", func() {
+				command := cmd.NewRootCommand()
+				flags.RegisterNotificationFlags(command)
+
+				err := command.ParseFlags([]string{
+					"--notifications-delay",
+					"5",
+				})
+				Expect(err).NotTo(HaveOccurred())
+				delay := notifications.GetDelay(command, time.Duration(0))
+				Expect(delay).To(Equal(time.Duration(5) * time.Second))
+			})
+		})
+		When("legacy delay is defined", func() {
+			It("should use the specified legacy delay", func() {
+				command := cmd.NewRootCommand()
+				flags.RegisterNotificationFlags(command)
+				delay := notifications.GetDelay(command, time.Duration(5)*time.Second)
+				Expect(delay).To(Equal(time.Duration(5) * time.Second))
+			})
+		})
+		When("legacy delay and delay is defined", func() {
+			It("should use the specified legacy delay and ignore the specified delay", func() {
+				command := cmd.NewRootCommand()
+				flags.RegisterNotificationFlags(command)
+
+				err := command.ParseFlags([]string{
+					"--notifications-delay",
+					"0",
+				})
+				Expect(err).NotTo(HaveOccurred())
+				delay := notifications.GetDelay(command, time.Duration(7)*time.Second)
+				Expect(delay).To(Equal(time.Duration(7) * time.Second))
 			})
 		})
 	})
@@ -60,9 +146,9 @@ var _ = Describe("notifications", func() {
 			channel := "123456789"
 			token := "abvsihdbau"
 			color := notifications.ColorInt
-			hostname := notifications.GetHostname(command)
-			title := url.QueryEscape(notifications.GetTitle(hostname))
-			expected := fmt.Sprintf("discord://%s@%s?color=0x%x&colordebug=0x0&colorerror=0x0&colorinfo=0x0&colorwarn=0x0&title=%s&username=watchtower", token, channel, color, title)
+			username := "containrrrbot"
+			iconURL := "https://containrrr.dev/watchtower-sq180.png"
+			expected := fmt.Sprintf("discord://%s@%s?color=0x%x&colordebug=0x0&colorerror=0x0&colorinfo=0x0&colorwarn=0x0&username=watchtower", token, channel, color)
 			buildArgs := func(url string) []string {
 				return []string{
 					"--notifications",
@@ -74,11 +160,32 @@ var _ = Describe("notifications", func() {
 
 			It("should return a discord url when using a hook url with the domain discord.com", func() {
 				hookURL := fmt.Sprintf("https://%s/api/webhooks/%s/%s/slack", "discord.com", channel, token)
-				testURL(buildArgs(hookURL), expected)
+				testURL(buildArgs(hookURL), expected, time.Duration(0))
 			})
 			It("should return a discord url when using a hook url with the domain discordapp.com", func() {
 				hookURL := fmt.Sprintf("https://%s/api/webhooks/%s/%s/slack", "discordapp.com", channel, token)
-				testURL(buildArgs(hookURL), expected)
+				testURL(buildArgs(hookURL), expected, time.Duration(0))
+			})
+			When("icon URL and username are specified", func() {
+				It("should return the expected URL", func() {
+					hookURL := fmt.Sprintf("https://%s/api/webhooks/%s/%s/slack", "discord.com", channel, token)
+					expectedOutput := fmt.Sprintf("discord://%s@%s?avatar=%s&color=0x%x&colordebug=0x0&colorerror=0x0&colorinfo=0x0&colorwarn=0x0&username=%s", token, channel, url.QueryEscape(iconURL), color, username)
+					expectedDelay := time.Duration(7) * time.Second
+					args := []string{
+						"--notifications",
+						"slack",
+						"--notification-slack-hook-url",
+						hookURL,
+						"--notification-slack-identifier",
+						username,
+						"--notification-slack-icon-url",
+						iconURL,
+						"--notifications-delay",
+						fmt.Sprint(expectedDelay.Seconds()),
+					}
+
+					testURL(args, expectedOutput, expectedDelay)
+				})
 			})
 		})
 		When("converting a slack service config into a shoutrrr url", func() {
@@ -89,8 +196,6 @@ var _ = Describe("notifications", func() {
 			tokenB := "BBBBBBBBB"
 			tokenC := "123456789123456789123456"
 			color := url.QueryEscape(notifications.ColorHex)
-			hostname := notifications.GetHostname(command)
-			title := url.QueryEscape(notifications.GetTitle(hostname))
 			iconURL := "https://containrrr.dev/watchtower-sq180.png"
 			iconEmoji := "whale"
 
@@ -98,7 +203,8 @@ var _ = Describe("notifications", func() {
 				It("should return the expected URL", func() {
 
 					hookURL := fmt.Sprintf("https://hooks.slack.com/services/%s/%s/%s", tokenA, tokenB, tokenC)
-					expectedOutput := fmt.Sprintf("slack://hook:%s-%s-%s@webhook?botname=%s&color=%s&icon=%s&title=%s", tokenA, tokenB, tokenC, username, color, url.QueryEscape(iconURL), title)
+					expectedOutput := fmt.Sprintf("slack://hook:%s-%s-%s@webhook?botname=%s&color=%s&icon=%s", tokenA, tokenB, tokenC, username, color, url.QueryEscape(iconURL))
+					expectedDelay := time.Duration(7) * time.Second
 
 					args := []string{
 						"--notifications",
@@ -109,16 +215,18 @@ var _ = Describe("notifications", func() {
 						username,
 						"--notification-slack-icon-url",
 						iconURL,
+						"--notifications-delay",
+						fmt.Sprint(expectedDelay.Seconds()),
 					}
 
-					testURL(args, expectedOutput)
+					testURL(args, expectedOutput, expectedDelay)
 				})
 			})
 
 			When("icon emoji is specified", func() {
 				It("should return the expected URL", func() {
 					hookURL := fmt.Sprintf("https://hooks.slack.com/services/%s/%s/%s", tokenA, tokenB, tokenC)
-					expectedOutput := fmt.Sprintf("slack://hook:%s-%s-%s@webhook?botname=%s&color=%s&icon=%s&title=%s", tokenA, tokenB, tokenC, username, color, iconEmoji, title)
+					expectedOutput := fmt.Sprintf("slack://hook:%s-%s-%s@webhook?botname=%s&color=%s&icon=%s", tokenA, tokenB, tokenC, username, color, iconEmoji)
 
 					args := []string{
 						"--notifications",
@@ -131,7 +239,7 @@ var _ = Describe("notifications", func() {
 						iconEmoji,
 					}
 
-					testURL(args, expectedOutput)
+					testURL(args, expectedOutput, time.Duration(0))
 				})
 			})
 		})
@@ -145,10 +253,8 @@ var _ = Describe("notifications", func() {
 
 				token := "aaa"
 				host := "shoutrrr.local"
-				hostname := notifications.GetHostname(command)
-				title := url.QueryEscape(notifications.GetTitle(hostname))
 
-				expectedOutput := fmt.Sprintf("gotify://%s/%s?title=%s", host, token, title)
+				expectedOutput := fmt.Sprintf("gotify://%s/%s?title=", host, token)
 
 				args := []string{
 					"--notifications",
@@ -159,7 +265,7 @@ var _ = Describe("notifications", func() {
 					token,
 				}
 
-				testURL(args, expectedOutput)
+				testURL(args, expectedOutput, time.Duration(0))
 			})
 		})
 	})
@@ -174,11 +280,9 @@ var _ = Describe("notifications", func() {
 				tokenB := "33333333012222222222333333333344"
 				tokenC := "44444444-4444-4444-8444-cccccccccccc"
 				color := url.QueryEscape(notifications.ColorHex)
-				hostname := notifications.GetHostname(command)
-				title := url.QueryEscape(notifications.GetTitle(hostname))
 
 				hookURL := fmt.Sprintf("https://outlook.office.com/webhook/%s/IncomingWebhook/%s/%s", tokenA, tokenB, tokenC)
-				expectedOutput := fmt.Sprintf("teams://%s/%s/%s?color=%s&title=%s", tokenA, tokenB, tokenC, color, title)
+				expectedOutput := fmt.Sprintf("teams://%s/%s/%s?color=%s", tokenA, tokenB, tokenC, color)
 
 				args := []string{
 					"--notifications",
@@ -187,7 +291,7 @@ var _ = Describe("notifications", func() {
 					hookURL,
 				}
 
-				testURL(args, expectedOutput)
+				testURL(args, expectedOutput, time.Duration(0))
 			})
 		})
 	})
@@ -197,6 +301,8 @@ var _ = Describe("notifications", func() {
 			It("should set the from address in the URL", func() {
 				fromAddress := "lala@example.com"
 				expectedOutput := buildExpectedURL("containrrrbot", "secret-password", "mail.containrrr.dev", 25, fromAddress, "mail@example.com", "Plain")
+				expectedDelay := time.Duration(7) * time.Second
+
 				args := []string{
 					"--notifications",
 					"email",
@@ -210,8 +316,10 @@ var _ = Describe("notifications", func() {
 					"secret-password",
 					"--notification-email-server",
 					"mail.containrrr.dev",
+					"--notifications-delay",
+					fmt.Sprint(expectedDelay.Seconds()),
 				}
-				testURL(args, expectedOutput)
+				testURL(args, expectedOutput, expectedDelay)
 			})
 
 			It("should return the expected URL", func() {
@@ -219,6 +327,7 @@ var _ = Describe("notifications", func() {
 				fromAddress := "sender@example.com"
 				toAddress := "receiver@example.com"
 				expectedOutput := buildExpectedURL("containrrrbot", "secret-password", "mail.containrrr.dev", 25, fromAddress, toAddress, "Plain")
+				expectedDelay := time.Duration(7) * time.Second
 
 				args := []string{
 					"--notifications",
@@ -233,44 +342,36 @@ var _ = Describe("notifications", func() {
 					"secret-password",
 					"--notification-email-server",
 					"mail.containrrr.dev",
+					"--notification-email-delay",
+					fmt.Sprint(expectedDelay.Seconds()),
 				}
 
-				testURL(args, expectedOutput)
+				testURL(args, expectedOutput, expectedDelay)
 			})
 		})
 	})
 })
 
 func buildExpectedURL(username string, password string, host string, port int, from string, to string, auth string) string {
-	hostname, err := os.Hostname()
-	Expect(err).NotTo(HaveOccurred())
-
-	subject := fmt.Sprintf("Watchtower updates on %s", hostname)
-
-	var template = "smtp://%s:%s@%s:%d/?auth=%s&fromaddress=%s&fromname=Watchtower&subject=%s&toaddresses=%s"
+	var template = "smtp://%s:%s@%s:%d/?auth=%s&fromaddress=%s&fromname=Watchtower&subject=&toaddresses=%s"
 	return fmt.Sprintf(template,
 		url.QueryEscape(username),
 		url.QueryEscape(password),
 		host, port, auth,
 		url.QueryEscape(from),
-		url.QueryEscape(subject),
 		url.QueryEscape(to))
 }
 
-func testURL(args []string, expectedURL string) {
+func testURL(args []string, expectedURL string, expectedDelay time.Duration) {
 	defer GinkgoRecover()
 
 	command := cmd.NewRootCommand()
 	flags.RegisterNotificationFlags(command)
 
-	err := command.ParseFlags(args)
-	Expect(err).NotTo(HaveOccurred())
+	Expect(command.ParseFlags(args)).To(Succeed())
 
-	hostname := notifications.GetHostname(command)
-	title := notifications.GetTitle(hostname)
-	urls, _ := notifications.AppendLegacyUrls([]string{}, command, title)
-
-	Expect(err).NotTo(HaveOccurred())
+	urls, delay := notifications.AppendLegacyUrls([]string{}, command)
 
 	Expect(urls).To(ContainElement(expectedURL))
+	Expect(delay).To(Equal(expectedDelay))
 }

@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"github.com/containrrr/watchtower/internal/meta"
+	"errors"
 	"math"
 	"net/http"
 	"os"
@@ -11,12 +11,12 @@ import (
 	"syscall"
 	"time"
 
-	apiMetrics "github.com/containrrr/watchtower/pkg/api/metrics"
-	"github.com/containrrr/watchtower/pkg/api/update"
-
 	"github.com/containrrr/watchtower/internal/actions"
 	"github.com/containrrr/watchtower/internal/flags"
+	"github.com/containrrr/watchtower/internal/meta"
 	"github.com/containrrr/watchtower/pkg/api"
+	apiMetrics "github.com/containrrr/watchtower/pkg/api/metrics"
+	"github.com/containrrr/watchtower/pkg/api/update"
 	"github.com/containrrr/watchtower/pkg/container"
 	"github.com/containrrr/watchtower/pkg/filters"
 	"github.com/containrrr/watchtower/pkg/metrics"
@@ -29,18 +29,20 @@ import (
 )
 
 var (
-	client         container.Client
-	scheduleSpec   string
-	cleanup        bool
-	noRestart      bool
-	monitorOnly    bool
-	enableLabel    bool
-	notifier       t.Notifier
-	timeout        time.Duration
-	lifecycleHooks bool
-	rollingRestart bool
-	scope          string
-	// Set on build using ldflags
+	client            container.Client
+	scheduleSpec      string
+	cleanup           bool
+	noRestart         bool
+	noPull            bool
+	monitorOnly       bool
+	enableLabel       bool
+	disableContainers []string
+	notifier          t.Notifier
+	timeout           time.Duration
+	lifecycleHooks    bool
+	rollingRestart    bool
+	scope             string
+	labelPrecedence   bool
 )
 
 var rootCmd = NewRootCommand()
@@ -56,6 +58,7 @@ func NewRootCommand() *cobra.Command {
 	`,
 		Run:    Run,
 		PreRun: PreRun,
+		Args:   cobra.ArbitraryArgs,
 	}
 }
 
@@ -68,6 +71,7 @@ func init() {
 
 // Execute the root func and exit in case of errors
 func Execute() {
+	rootCmd.AddCommand(notifyUpgradeCommand)
 	if err := rootCmd.Execute(); err != nil {
 		log.Fatal(err)
 	}
@@ -76,37 +80,12 @@ func Execute() {
 // PreRun is a lifecycle hook that runs before the command is executed.
 func PreRun(cmd *cobra.Command, _ []string) {
 	f := cmd.PersistentFlags()
-
-	if enabled, _ := f.GetBool("no-color"); enabled {
-		log.SetFormatter(&log.TextFormatter{
-			DisableColors: true,
-		})
-	} else {
-		// enable logrus built-in support for https://bixense.com/clicolors/
-		log.SetFormatter(&log.TextFormatter{
-			EnvironmentOverrideColors: true,
-		})
+	flags.ProcessFlagAliases(f)
+	if err := flags.SetupLogging(f); err != nil {
+		log.Fatalf("Failed to initialize logging: %s", err.Error())
 	}
 
-	if enabled, _ := f.GetBool("debug"); enabled {
-		log.SetLevel(log.DebugLevel)
-	}
-	if enabled, _ := f.GetBool("trace"); enabled {
-		log.SetLevel(log.TraceLevel)
-	}
-
-	pollingSet := f.Changed("interval")
-	schedule, _ := f.GetString("schedule")
-	cronLen := len(schedule)
-
-	if pollingSet && cronLen > 0 {
-		log.Fatal("Only schedule or interval can be defined, not both.")
-	} else if cronLen > 0 {
-		scheduleSpec, _ = f.GetString("schedule")
-	} else {
-		interval, _ := f.GetInt("interval")
-		scheduleSpec = "@every " + strconv.Itoa(interval) + "s"
-	}
+	scheduleSpec, _ = f.GetString("schedule")
 
 	flags.GetSecretsFromFiles(cmd)
 	cleanup, noRestart, monitorOnly, timeout = flags.ReadFlags(cmd)
@@ -116,11 +95,15 @@ func PreRun(cmd *cobra.Command, _ []string) {
 	}
 
 	enableLabel, _ = f.GetBool("label-enable")
+	disableContainers, _ = f.GetStringSlice("disable-containers")
 	lifecycleHooks, _ = f.GetBool("enable-lifecycle-hooks")
 	rollingRestart, _ = f.GetBool("rolling-restart")
 	scope, _ = f.GetString("scope")
+	labelPrecedence, _ = f.GetBool("label-take-precedence")
 
-	log.Debug(scope)
+	if scope != "" {
+		log.Debugf(`Using scope %q`, scope)
+	}
 
 	// configure environment vars for client
 	err := flags.EnvConfig(cmd)
@@ -128,7 +111,7 @@ func PreRun(cmd *cobra.Command, _ []string) {
 		log.Fatal(err)
 	}
 
-	noPull, _ := f.GetBool("no-pull")
+	noPull, _ = f.GetBool("no-pull")
 	includeStopped, _ := f.GetBool("include-stopped")
 	includeRestarting, _ := f.GetBool("include-restarting")
 	reviveStopped, _ := f.GetBool("revive-stopped")
@@ -139,26 +122,36 @@ func PreRun(cmd *cobra.Command, _ []string) {
 		log.Warn("Using `WATCHTOWER_NO_PULL` and `WATCHTOWER_MONITOR_ONLY` simultaneously might lead to no action being taken at all. If this is intentional, you may safely ignore this message.")
 	}
 
-	client = container.NewClient(
-		!noPull,
-		includeStopped,
-		reviveStopped,
-		removeVolumes,
-		includeRestarting,
-		warnOnHeadPullFailed,
-	)
+	client = container.NewClient(container.ClientOptions{
+		IncludeStopped:    includeStopped,
+		ReviveStopped:     reviveStopped,
+		RemoveVolumes:     removeVolumes,
+		IncludeRestarting: includeRestarting,
+		WarnOnHeadFailed:  container.WarningStrategy(warnOnHeadPullFailed),
+	})
 
 	notifier = notifications.NewNotifier(cmd)
+	notifier.AddLogHook()
 }
 
 // Run is the main execution flow of the command
 func Run(c *cobra.Command, names []string) {
-	filter, filterDesc := filters.BuildFilter(names, enableLabel, scope)
+	filter, filterDesc := filters.BuildFilter(names, disableContainers, enableLabel, scope)
 	runOnce, _ := c.PersistentFlags().GetBool("run-once")
 	enableUpdateAPI, _ := c.PersistentFlags().GetBool("http-api-update")
 	enableMetricsAPI, _ := c.PersistentFlags().GetBool("http-api-metrics")
 	unblockHTTPAPI, _ := c.PersistentFlags().GetBool("http-api-periodic-polls")
 	apiToken, _ := c.PersistentFlags().GetString("http-api-token")
+	healthCheck, _ := c.PersistentFlags().GetBool("health-check")
+
+	if healthCheck {
+		// health check should not have pid 1
+		if os.Getpid() == 1 {
+			time.Sleep(1 * time.Second)
+			log.Fatal("The health check flag should never be passed to the main watchtower container process")
+		}
+		os.Exit(0)
+	}
 
 	if rollingRestart && monitorOnly {
 		log.Fatal("Rolling restarts is not compatible with the global monitor only flag")
@@ -189,9 +182,12 @@ func Run(c *cobra.Command, names []string) {
 	httpAPI := api.New(apiToken)
 
 	if enableUpdateAPI {
-		updateHandler := update.New(func() { runUpdatesWithNotifications(filter) }, updateLock)
+		updateHandler := update.New(func(images []string) {
+			metric := runUpdatesWithNotifications(filters.FilterByImage(images, filter))
+			metrics.RegisterScan(metric)
+		}, updateLock)
 		httpAPI.RegisterFunc(updateHandler.Path, updateHandler.Handle)
-		// If polling isn't enabled the scheduler is never started and
+		// If polling isn't enabled the scheduler is never started, and
 		// we need to trigger the startup messages manually.
 		if !unblockHTTPAPI {
 			writeStartupMessage(c, time.Time{}, filterDesc)
@@ -203,7 +199,7 @@ func Run(c *cobra.Command, names []string) {
 		httpAPI.RegisterHandler(metricsHandler.Path, metricsHandler.Handle)
 	}
 
-	if err := httpAPI.Start(enableUpdateAPI && !unblockHTTPAPI); err != nil && err != http.ErrServerClosed {
+	if err := httpAPI.Start(enableUpdateAPI && !unblockHTTPAPI); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Error("failed to start API", err)
 	}
 
@@ -293,7 +289,7 @@ func writeStartupMessage(c *cobra.Command, sched time.Time, filtering string) {
 		startupLog.Info("Scheduling first run: " + sched.Format("2006-01-02 15:04:05 -0700 MST"))
 		startupLog.Info("Note that the first check will be performed in " + until)
 	} else if runOnce, _ := c.PersistentFlags().GetBool("run-once"); runOnce {
-			startupLog.Info("Running a one time update.")
+		startupLog.Info("Running a one time update.")
 	} else {
 		startupLog.Info("Periodic runs are not enabled.")
 	}
@@ -363,13 +359,15 @@ func runUpgradesOnSchedule(c *cobra.Command, filter t.Filter, filtering string, 
 func runUpdatesWithNotifications(filter t.Filter) *metrics.Metric {
 	notifier.StartNotification()
 	updateParams := t.UpdateParams{
-		Filter:         filter,
-		Cleanup:        cleanup,
-		NoRestart:      noRestart,
-		Timeout:        timeout,
-		MonitorOnly:    monitorOnly,
-		LifecycleHooks: lifecycleHooks,
-		RollingRestart: rollingRestart,
+		Filter:          filter,
+		Cleanup:         cleanup,
+		NoRestart:       noRestart,
+		Timeout:         timeout,
+		MonitorOnly:     monitorOnly,
+		LifecycleHooks:  lifecycleHooks,
+		RollingRestart:  rollingRestart,
+		LabelPrecedence: labelPrecedence,
+		NoPull:          noPull,
 	}
 	result, err := actions.Update(client, updateParams)
 	if err != nil {

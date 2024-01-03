@@ -6,6 +6,30 @@
   "commit": false,
   "contributors": [
     {
+      "login": "piksel",
+      "name": "nils måsén",
+      "avatar_url": "https://avatars2.githubusercontent.com/u/807383?v=4",
+      "profile": "https://piksel.se",
+      "contributions": [
+        "code",
+        "doc",
+        "maintenance",
+        "review"
+      ]
+    },
+    {
+      "login": "simskij",
+      "name": "Simon Aronsson",
+      "avatar_url": "https://avatars0.githubusercontent.com/u/1596025?v=4",
+      "profile": "http://simme.dev",
+      "contributions": [
+        "code",
+        "doc",
+        "maintenance",
+        "review"
+      ]
+    },
+    {
       "login": "Codelica",
       "name": "James",
       "avatar_url": "https://avatars3.githubusercontent.com/u/386101?v=4",
@@ -274,18 +298,6 @@
       ]
     },
     {
-      "login": "simskij",
-      "name": "Simon Aronsson",
-      "avatar_url": "https://avatars0.githubusercontent.com/u/1596025?v=4",
-      "profile": "http://simme.dev",
-      "contributions": [
-        "code",
-        "maintenance",
-        "review",
-        "doc"
-      ]
-    },
-    {
       "login": "Ansem93",
       "name": "Ansem93",
       "avatar_url": "https://avatars3.githubusercontent.com/u/6626218?v=4",
@@ -509,16 +521,6 @@
       ]
     },
     {
-      "login": "piksel",
-      "name": "nils måsén",
-      "avatar_url": "https://avatars2.githubusercontent.com/u/807383?v=4",
-      "profile": "https://piksel.se",
-      "contributions": [
-        "doc",
-        "code"
-      ]
-    },
-    {
       "login": "arnested",
       "name": "Arne Jørgensen",
       "avatar_url": "https://avatars2.githubusercontent.com/u/190005?v=4",
@@ -693,7 +695,8 @@
       "profile": "https://github.com/ksurl",
       "contributions": [
         "doc",
-        "code"
+        "code",
+        "infra"
       ]
     },
     {
@@ -812,6 +815,67 @@
       "contributions": [
         "doc"
       ]
+    },
+    {
+      "login": "Foxite",
+      "name": "Dirk Kok",
+      "avatar_url": "https://avatars.githubusercontent.com/u/20421657?v=4",
+      "profile": "https://ko-fi.com/foxite",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "EDIflyer",
+      "name": "EDIflyer",
+      "avatar_url": "https://avatars.githubusercontent.com/u/13610277?v=4",
+      "profile": "https://github.com/EDIflyer",
+      "contributions": [
+        "doc"
+      ]
+    },
+    {
+      "login": "jauderho",
+      "name": "Jauder Ho",
+      "avatar_url": "https://avatars.githubusercontent.com/u/13562?v=4",
+      "profile": "https://github.com/jauderho",
+      "contributions": [
+        "code"
+      ]
+    },
+    {
+      "login": "andriibratanin",
+      "name": "Andrii Bratanin",
+      "avatar_url": "https://avatars.githubusercontent.com/u/20169213?v=4",
+      "profile": "https://github.com/andriibratanin"
+    },
+    {
+      "login": "IAmTamal",
+      "name": "Tamal Das ",
+      "avatar_url": "https://avatars.githubusercontent.com/u/72851613?v=4",
+      "profile": "https://tamal.vercel.app/",
+      "contributions": [
+        "doc"
+      ]
+    },
+    {
+      "login": "testwill",
+      "name": "guangwu",
+      "avatar_url": "https://avatars.githubusercontent.com/u/8717479?v=4",
+      "profile": "https://github.com/testwill",
+      "contributions": [
+        "doc"
+      ]
+    },
+    {
+      "login": "nothub",
+      "name": "Florian Hübner",
+      "avatar_url": "https://avatars.githubusercontent.com/u/48992448?v=4",
+      "profile": "http://hub.lol",
+      "contributions": [
+        "doc",
+        "code"
+      ]
     }
   ],
   "contributorsPerLine": 7,
@@ -820,5 +884,6 @@
   "repoType": "github",
   "repoHost": "https://github.com",
   "commitConvention": "none",
-  "skipCi": true
+  "skipCi": true,
+  "commitType": "docs"
 }

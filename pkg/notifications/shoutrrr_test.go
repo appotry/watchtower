@@ -14,7 +14,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var allButTrace = logrus.AllLevels[0:logrus.TraceLevel]
+var allButTrace = logrus.DebugLevel
 
 var legacyMockData = Data{
 	Entries: []*logrus.Entry{
@@ -49,11 +49,14 @@ var mockDataAllFresh = Data{
 
 func mockDataFromStates(states ...s.State) Data {
 	hostname := "Mock"
+	prefix := ""
 	return Data{
 		Entries: legacyMockData.Entries,
 		Report:  mocks.CreateMockProgressReport(states...),
-		Title:   GetTitle(hostname),
-		Host:    hostname,
+		StaticData: StaticData{
+			Title: GetTitle(hostname, prefix),
+			Host:  hostname,
+		},
 	}
 }
 
@@ -70,6 +73,40 @@ var _ = Describe("Shoutrrr", func() {
 		})
 	})
 
+	When("passing a common template name", func() {
+		It("should format using that template", func() {
+			expected := `
+updt1 (mock/updt1:latest): Updated
+`[1:]
+			data := mockDataFromStates(s.UpdatedState)
+			Expect(getTemplatedResult(`porcelain.v1.summary-no-log`, false, data)).To(Equal(expected))
+		})
+	})
+
+	When("adding a log hook", func() {
+		When("it has not been added before", func() {
+			It("should be added to the logrus hooks", func() {
+				level := logrus.TraceLevel
+				hooksBefore := len(logrus.StandardLogger().Hooks[level])
+				shoutrrr := createNotifier([]string{}, level, "", true, StaticData{}, false, time.Second)
+				shoutrrr.AddLogHook()
+				hooksAfter := len(logrus.StandardLogger().Hooks[level])
+				Expect(hooksAfter).To(BeNumerically(">", hooksBefore))
+			})
+		})
+		When("it is being added a second time", func() {
+			It("should not be added to the logrus hooks", func() {
+				level := logrus.TraceLevel
+				shoutrrr := createNotifier([]string{}, level, "", true, StaticData{}, false, time.Second)
+				shoutrrr.AddLogHook()
+				hooksBefore := len(logrus.StandardLogger().Hooks[level])
+				shoutrrr.AddLogHook()
+				hooksAfter := len(logrus.StandardLogger().Hooks[level])
+				Expect(hooksAfter).To(Equal(hooksBefore))
+			})
+		})
+	})
+
 	When("using legacy templates", func() {
 
 		When("no custom template is provided", func() {
@@ -77,7 +114,7 @@ var _ = Describe("Shoutrrr", func() {
 				cmd := new(cobra.Command)
 				flags.RegisterNotificationFlags(cmd)
 
-				shoutrrr := createNotifier([]string{}, logrus.AllLevels, "", true)
+				shoutrrr := createNotifier([]string{}, logrus.TraceLevel, "", true, StaticData{}, false, time.Second)
 
 				entries := []*logrus.Entry{
 					{
@@ -165,7 +202,6 @@ var _ = Describe("Shoutrrr", func() {
 	})
 
 	When("using report templates", func() {
-
 		When("no custom template is provided", func() {
 			It("should format the messages using the default template", func() {
 				expected := `4 Scanned, 2 Updated, 1 Failed
@@ -233,7 +269,7 @@ Turns out everything is on fire
 	When("batching notifications", func() {
 		When("no messages are queued", func() {
 			It("should not send any notification", func() {
-				shoutrrr := newShoutrrrNotifier("", allButTrace, true, "", time.Duration(0), "logger://")
+				shoutrrr := createNotifier([]string{"logger://"}, allButTrace, "", true, StaticData{}, false, time.Duration(0))
 				shoutrrr.StartNotification()
 				shoutrrr.SendNotification(nil)
 				Consistently(logBuffer).ShouldNot(gbytes.Say(`Shoutrrr:`))
@@ -241,12 +277,24 @@ Turns out everything is on fire
 		})
 		When("at least one message is queued", func() {
 			It("should send a notification", func() {
-				shoutrrr := newShoutrrrNotifier("", allButTrace, true, "", time.Duration(0), "logger://")
+				shoutrrr := createNotifier([]string{"logger://"}, allButTrace, "", true, StaticData{}, false, time.Duration(0))
+				shoutrrr.AddLogHook()
 				shoutrrr.StartNotification()
 				logrus.Info("This log message is sponsored by ContainrrrVPN")
 				shoutrrr.SendNotification(nil)
 				Eventually(logBuffer).Should(gbytes.Say(`Shoutrrr: This log message is sponsored by ContainrrrVPN`))
 			})
+		})
+	})
+
+	When("the title data field is empty", func() {
+		It("should not have set the title param", func() {
+			shoutrrr := createNotifier([]string{"logger://"}, allButTrace, "", true, StaticData{
+				Host:  "test.host",
+				Title: "",
+			}, false, time.Second)
+			_, found := shoutrrr.params.Title()
+			Expect(found).ToNot(BeTrue())
 		})
 	})
 
@@ -276,7 +324,7 @@ type blockingRouter struct {
 }
 
 func (b blockingRouter) Send(_ string, _ *types.Params) []error {
-	_ = <-b.unlock
+	<-b.unlock
 	b.sent <- true
 	return nil
 }
@@ -298,13 +346,14 @@ func sendNotificationsWithBlockingRouter(legacy bool) (*shoutrrrTypeNotifier, *b
 		Router:         router,
 		legacyTemplate: legacy,
 		params:         &types.Params{},
+		delay:          time.Duration(0),
 	}
 
 	entry := &logrus.Entry{
 		Message: "foo bar",
 	}
 
-	go sendNotifications(shoutrrr, time.Duration(0))
+	go sendNotifications(shoutrrr)
 
 	shoutrrr.StartNotification()
 	_ = shoutrrr.Fire(entry)
